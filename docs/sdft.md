@@ -36,6 +36,12 @@ The context is either the same text on every row of a dataset (set in YAML) or a
 column in the data). With a `datasets:` mixture, each entry takes, besides the usual `path`, `name`, `split`,
 `data_files`, `columns` and `weight`:
 
+An explicit top-level `datasets:` list in your config replaces the default mixture in full.
+List every dataset you want to use, including its column/context settings; entries are not
+merged by `name` (a dataset subset such as `main` is not a unique dataset identifier).
+Omitting `datasets` keeps the default mixture, while `datasets: []` clears it. Repeated
+entries and their order are preserved. To combine your data with GSM8K, list both explicitly.
+
 | Key | Meaning |
 |---|---|
 | `privileged_context` | Same context on every row of this dataset (inline text). |
