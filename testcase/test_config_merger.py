@@ -165,10 +165,10 @@ class TestMergeConfigFiles:
             os.unlink(user_path)
 
     def test_merge_with_list_values(self):
-        """Test merging configs with list values"""
+        """Generic keyed lists still merge; dataset overrides are tested below."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             default_config = {
-                "datasets": [
+                "components": [
                     {"id": "ds1", "path": "/path1", "weight": 1.0},
                     {"id": "ds2", "path": "/path2", "weight": 0.5},
                 ],
@@ -179,7 +179,7 @@ class TestMergeConfigFiles:
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             user_config = {
-                "datasets": [
+                "components": [
                     {"id": "ds1", "weight": 2.0},  # Override weight for ds1
                     {"id": "ds3", "path": "/path3", "weight": 1.5},  # Add new dataset
                 ],
@@ -194,14 +194,14 @@ class TestMergeConfigFiles:
             with open(merged_path) as f:
                 merged = yaml.safe_load(f)
 
-            # Check datasets list merge by id
-            datasets = merged["datasets"]
-            ds1 = next(d for d in datasets if d.get("id") == "ds1")
+            # Check generic components list merge by id.
+            components = merged["components"]
+            ds1 = next(d for d in components if d.get("id") == "ds1")
             assert ds1["weight"] == 2.0  # Override
             assert ds1["path"] == "/path1"  # Preserved
 
             # Check new dataset added
-            ds3 = next((d for d in datasets if d.get("id") == "ds3"), None)
+            ds3 = next((d for d in components if d.get("id") == "ds3"), None)
             assert ds3 is not None
             assert ds3["weight"] == 1.5
 
@@ -362,6 +362,117 @@ class TestMergeConfigFiles:
             os.unlink(merged_path)
         finally:
             os.unlink(default_path)
+
+
+def _read_merged_config(default_path, user_config, tmp_path):
+    user_path = tmp_path / "user.yaml"
+    user_path.write_text(yaml.safe_dump(user_config), encoding="utf-8")
+    merged_path = Path(merge_config_files(default_path, user_path))
+    try:
+        return yaml.safe_load(merged_path.read_text(encoding="utf-8"))
+    finally:
+        merged_path.unlink()
+
+
+class TestDatasetListOverrides:
+    """The requested dataset mixture must not inherit or collapse other data."""
+
+    defaults = Path(__file__).resolve().parents[1] / "configs/_defaults-SDFT.yaml"
+
+    @pytest.mark.parametrize(
+        "datasets",
+        [
+            [
+                {
+                    "path": "my-org/my-prompts",
+                    "columns": ["prompt"],
+                    "privileged_context": "You are a concise assistant.",
+                }
+            ],
+            [
+                {
+                    "path": "json",
+                    "data_files": "my_rows.jsonl",
+                    "split": "train",
+                    "columns": ["prompt", "privileged_context"],
+                }
+            ],
+        ],
+    )
+    def test_documented_custom_data_replaces_sdft_defaults(self, tmp_path, datasets):
+        merged = _read_merged_config(self.defaults, {"datasets": datasets}, tmp_path)
+
+        assert merged["datasets"] == datasets
+        assert merged["teacher_model_kind"] == "base"
+
+    def test_same_subset_name_does_not_merge_distinct_datasets(self, tmp_path):
+        datasets = [
+            {"path": "org/first", "name": "main", "columns": ["prompt"]},
+            {"path": "org/second", "name": "main", "columns": ["messages"]},
+        ]
+
+        merged = _read_merged_config(self.defaults, {"datasets": datasets}, tmp_path)
+
+        assert merged["datasets"] == datasets
+        assert all("prompt_column" not in item for item in merged["datasets"])
+        assert all(
+            "privileged_context_column" not in item for item in merged["datasets"]
+        )
+
+    def test_explicit_empty_list_clears_sdft_default_mixture(self, tmp_path):
+        merged = _read_merged_config(self.defaults, {"datasets": []}, tmp_path)
+
+        assert merged["datasets"] == []
+
+    def test_omitted_datasets_keeps_sdft_defaults(self, tmp_path):
+        default_config = yaml.safe_load(self.defaults.read_text(encoding="utf-8"))
+
+        merged = _read_merged_config(self.defaults, {"seed": 7}, tmp_path)
+
+        assert merged["datasets"] == default_config["datasets"]
+        assert merged["seed"] == 7
+
+    def test_dataset_order_and_repeated_entries_are_preserved(self, tmp_path):
+        first = {"path": "org/data", "name": "main", "split": "first"}
+        second = {"path": "org/data", "name": "main", "split": "second"}
+        datasets = [first, second, first]
+
+        merged = _read_merged_config(self.defaults, {"datasets": datasets}, tmp_path)
+
+        assert merged["datasets"] == datasets
+
+    @pytest.mark.parametrize("key_field", ["id", "name", "key"])
+    def test_unrelated_nested_keyed_lists_still_merge(self, tmp_path, key_field):
+        # Only the top-level dataset mixture has replacement semantics.
+        default_config = {
+            "datasets": [{"path": "org/default", "name": "main"}],
+            "nested": {
+                "datasets": [
+                    {key_field: "first", "weight": 1, "retained": True},
+                    {key_field: "second", "weight": 2},
+                ]
+            },
+        }
+        default_path = tmp_path / "defaults.yaml"
+        default_path.write_text(yaml.safe_dump(default_config), encoding="utf-8")
+        user_config = {
+            "datasets": [],
+            "nested": {
+                "datasets": [
+                    {key_field: "first", "weight": 3},
+                    {key_field: "third", "weight": 4},
+                ]
+            },
+        }
+
+        merged = _read_merged_config(default_path, user_config, tmp_path)
+
+        assert merged["datasets"] == []
+        assert merged["nested"]["datasets"] == [
+            {key_field: "first", "weight": 3, "retained": True},
+            {key_field: "second", "weight": 2},
+            {key_field: "third", "weight": 4},
+        ]
 
 
 if __name__ == "__main__":
