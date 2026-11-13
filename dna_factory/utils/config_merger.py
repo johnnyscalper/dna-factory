@@ -31,6 +31,15 @@ def merge_config_files(default_config_path, user_config_path=None):
         with open(user_config_path, encoding="utf-8") as f:
             user_config = yaml.safe_load(f) or {}
 
+        # The top-level dataset mixture is an explicit selection, not a keyed
+        # merge: a dataset's `name` identifies a Hub subset, not a unique entry.
+        if (
+            isinstance(merged_config, dict)
+            and isinstance(user_config, dict)
+            and isinstance(user_config.get("datasets"), list)
+        ):
+            merged_config.pop("datasets", None)
+
         # Deep merge user config into default config
         def deep_merge(base, override):
             """
